@@ -31,6 +31,9 @@
 ;;; Code:
 (require 'dash)
 (require 's)
+(require 'scala-mode)
+(require 'cl-lib)
+(require 'company)
 
 (defconst inf-amm-mode-syntax-table
   (-let [table
@@ -86,9 +89,10 @@
 
 (defun amm-shell-get-process (&optional internal)
   "Get process corr. to `amm-shell-buffer-name'/`amm-shell-internal-buffer-name'."
-  (if (eq internal 'internal)
-    amm-shell-internal-buffer-name
-    amm-shell-buffer-name))
+  (-let [buffer-name (if (eq internal 'internal)
+             amm-shell-internal-buffer-name
+             amm-shell-buffer-name)]
+    (get-process buffer-name)))
 
 (defun amm--shell-current-buffer-process ()
   "Get process associated with current buffer.")
@@ -110,10 +114,8 @@
 (defun amm--shell-calculate-command (&optional internal)
   "Calculate the string used to execute the inferior Amm process."
   (if (eq internal 'internal)
-    "amm"
-  "amm")) ;; Currently no difference between the internal or not
-
-;; Straightforward string formatting - see: `shell-quote-argument'
+    (shell-quote-argument "amm")
+  (shell-quote-argument "amm"))) ;; Currently no difference between the internal or not
 
 (defun run-amm (&optional cmd)
   "Run an inferior Amm process.
@@ -130,7 +132,6 @@ CMD defaults to the result of `amm--shell-calculate-command'."
   (interactive)
   (unless (executable-find "amm")
     (message "Amm executable not found."))
-
   (when (and (not (amm-shell-get-process 'internal))
              (executable-find "amm"))
     (-let [amm--shell-font-lock-enable nil]
@@ -138,7 +139,6 @@ CMD defaults to the result of `amm--shell-calculate-command'."
           (-> (amm--shell-calculate-command 'internal)
               (amm--shell-make-comint amm-shell-internal-buffer-name nil 'internal)
               get-buffer-process)
-        (amm--shell-send-internal-setup-code)
         (message "Amm internal process successfully started")))))
 
 (defun amm--shell-make-comint (cmd proc-name &optional show internal)
@@ -195,16 +195,60 @@ CMD defaults to the result of `amm--shell-calculate-command'."
 
 (defun amm--shell-send-async (string)
   "Send STRING to internal amm process asynchronously."
-  (let ((output-buffer " *Comint Amm Redirect Work Buffer*")
+  (let ((output-buffer "*Comint Amm Redirect Work Buffer*")
         (proc (amm-shell-get-process 'internal)))
     (with-current-buffer (get-buffer-create output-buffer)
       (erase-buffer)
-      (comint-redirect-send-command-to-process string output-buffer proc nil t)
-      (set-buffer (process-buffer proc))
+      (comint-send-input t t)
+      (comint-redirect-setup output-buffer (current-buffer) comint-prompt-regexp nil)
+      (process-send-string (current-buffer) string))
+    ;; (comint-redirect-send-command-to-process string  proc nil t)
+    ;; (set-buffer (process-buffer proc))
       (while (and (null comint-redirect-completed)
                   (accept-process-output proc nil 100 t)))
       (set-buffer output-buffer)
-      (buffer-string))))
+      (buffer-string)))
+
+(defconst amm--company-regexp
+  (rx "'"
+      (group (1+ (not (any ",]"))))
+      "'"
+      (any "," "]"))
+  "Regex to extract candidates from Ammonite completion with TAB.")
+
+(defun amm--company-format-str (string)
+  "Format STRING to send to amm for completion candidates."
+  (when string
+    (format "%s\t"
+            string)))
+
+(defun amm--company-candidates (string)
+  "Get candidates for completion of STRING."
+  (-when-let* ((command (amm--company-format-str string))
+               (candidates (amm--shell-send-async command))
+               (matches (s-match-strings-all amm--company-regexp candidates)))
+    (-select-column 1 matches)))  ; Get match-data-1 for each match
+
+(defun company-amm-backend (command &optional arg &rest ignored)
+  (interactive (list 'interactive))
+  (cl-case command
+    (interactive (company-begin-backend 'company-amm-backend))
+    (prefix (company-grab-symbol))
+    (candidates (amm--company-candidates arg))
+  ))
+
+;; (defun company-sample-backend (command &optional arg &rest ignored)
+;;    (interactive (list 'interactive))
+;;    (cl-case command
+;;      (interactive (company-begin-backend 'company-sample-backend))
+;;      (prefix (and (eq major-mode 'fundamental-mode)
+;;                  (company-grab-symbol)))
+;;      (candidates
+;;      (cl-remove-if-not
+;;        (lambda (c) (string-prefix-p arg c))
+;;        sample-completions))))
+
+(add-to-list 'company-backends 'company-amm-backend)
 
 (provide 'inf-amm)
 ;;; inf-amm.el ends here
