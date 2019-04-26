@@ -199,22 +199,29 @@ CMD defaults to the result of `amm--shell-calculate-command'."
         (proc (amm-shell-get-process 'internal)))
     (with-current-buffer (get-buffer-create output-buffer)
       (erase-buffer)
-      (comint-send-input t t)
-      (comint-redirect-setup output-buffer (current-buffer) comint-prompt-regexp nil)
-      (process-send-string (current-buffer) string))
-    ;; (comint-redirect-send-command-to-process string  proc nil t)
-    ;; (set-buffer (process-buffer proc))
+      (comint-redirect-send-command-to-process string output-buffer proc nil t)
+      (set-buffer (process-buffer proc))
       (while (and (null comint-redirect-completed)
                   (accept-process-output proc nil 100 t)))
       (set-buffer output-buffer)
-      (buffer-string)))
+      (buffer-string))))
 
-(defconst amm--company-regexp
-  (rx "'"
-      (group (1+ (not (any ",]"))))
-      "'"
-      (any "," "]"))
-  "Regex to extract candidates from Ammonite completion with TAB.")
+;; (defun amm--shell-send-async (string)
+;;   "Send STRING to internal amm process asynchronously."
+;;   (let ((output-buffer "*Comint Amm Redirect Work Buffer*")
+;;         (internal-proc (amm-shell-get-process 'internal))
+;;         (amm-internal-buffer ))
+;;     (with-current-buffer (get-buffer-create output-buffer)
+;;       (erase-buffer)
+;;       (comint-redirect-setup output-buffer (current-buffer) comint-prompt-regexp nil)
+;;       (comint-send-input t t)
+;;       (process-send-string (current-buffer) string))
+;;     ;; (comint-redirect-send-command-to-process string  proc nil t)
+;;     ;; (set-buffer (process-buffer proc))
+;;       (while (and (null comint-redirect-completed)
+;;                   (accept-process-output internal-proc nil 100 t)))
+;;       (set-buffer output-buffer)
+;;       (buffer-string)))
 
 (defun amm--company-format-str (string)
   "Format STRING to send to amm for completion candidates."
@@ -226,29 +233,17 @@ CMD defaults to the result of `amm--shell-calculate-command'."
   "Get candidates for completion of STRING."
   (-when-let* ((command (amm--company-format-str string))
                (candidates (amm--shell-send-async command))
-               (matches (s-match-strings-all amm--company-regexp candidates)))
-    (-select-column 1 matches)))  ; Get match-data-1 for each match
+               (matches (split-string (replace-regexp-in-string "@" "" (ansi-color-filter-apply candidates)))))
+    matches))
 
 (defun company-amm-backend (command &optional arg &rest ignored)
   (interactive (list 'interactive))
   (cl-case command
     (interactive (company-begin-backend 'company-amm-backend))
     (prefix (company-grab-symbol))
-    (candidates (amm--company-candidates arg))
-  ))
+    (candidates (amm--company-candidates arg))))
 
-;; (defun company-sample-backend (command &optional arg &rest ignored)
-;;    (interactive (list 'interactive))
-;;    (cl-case command
-;;      (interactive (company-begin-backend 'company-sample-backend))
-;;      (prefix (and (eq major-mode 'fundamental-mode)
-;;                  (company-grab-symbol)))
-;;      (candidates
-;;      (cl-remove-if-not
-;;        (lambda (c) (string-prefix-p arg c))
-;;        sample-completions))))
-
-(add-to-list 'company-backends 'company-amm-backend)
+;; (add-to-list 'company-backends 'company-amm-backend)
 
 (provide 'inf-amm)
 ;;; inf-amm.el ends here
