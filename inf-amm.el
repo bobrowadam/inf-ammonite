@@ -155,13 +155,56 @@ CMD defaults to the result of `amm--shell-calculate-command'."
                (process
                 (get-buffer-process buffer)))
     (with-current-buffer buffer
-      (inferior-amm-mode))
+      (inf-amm-mode))
     (when show
       (display-buffer buffer))
     (if internal
         (set-process-query-on-exit-flag process nil)
       (setq amm-shell-buffer buffer))
     proc-buffer-name))
+
+(defun amm--shell-end-of-output? (string)
+  "Return non-nil if STRING ends with the prompt."
+  (s-matches? comint-prompt-regexp string))
+
+(defun amm--shell-output-filter (string)
+  "If STRING ends with input prompt then set filter in progress done."
+  (when (amm--shell-end-of-output? string)
+    (setq amm--shell-output-filter-in-progress nil))
+  "\n@ ")
+
+(defun amm--shell-send-string (string &optional process internal)
+  "Internal implementation of shell send string functionality."
+  (let ((process (or process (amm-shell-get-process internal)))
+        (amm--shell-output-filter-in-progress t))
+    (comint-send-string process string)
+    (while amm--shell-output-filter-in-progress
+      (accept-process-output process))))
+
+(defun amm-shell-send-string-no-output (string &optional process internal)
+  "Send STRING to amm PROCESS and inhibit printing output."
+  (-let [comint-preoutput-filter-functions
+         '(amm--shell-output-filter)]
+    (amm--shell-send-string string process internal)))
+
+(defun amm-shell-send-string (string &optional process)
+  "Send STRING to amm PROCESS."
+  (-let [comint-output-filter-functions
+         '(amm--shell-output-filter)]
+    (amm--shell-send-string string process)))
+
+(defun amm--shell-send-async (string)
+  "Send STRING to internal amm process asynchronously."
+  (let ((output-buffer " *Comint Amm Redirect Work Buffer*")
+        (proc (amm-shell-get-process 'internal)))
+    (with-current-buffer (get-buffer-create output-buffer)
+      (erase-buffer)
+      (comint-redirect-send-command-to-process string output-buffer proc nil t)
+      (set-buffer (process-buffer proc))
+      (while (and (null comint-redirect-completed)
+                  (accept-process-output proc nil 100 t)))
+      (set-buffer output-buffer)
+      (buffer-string))))
 
 (provide 'inf-amm)
 ;;; inf-amm.el ends here
