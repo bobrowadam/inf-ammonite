@@ -34,11 +34,12 @@
 (require 'scala-mode)
 (require 'cl-lib)
 (require 'company)
+(require 'comint)
 
 (defconst inf-amm-mode-syntax-table
   (-let [table
          (copy-syntax-table scala-syntax:syntax-table)]
-    ;; syntax modifications...
+     ;; syntax modifications...
     
     table)
   "inf-amm mode syntax table.")
@@ -54,13 +55,9 @@
   ;; This disables editing and traversing the "=>" prompts
   (setq-local comint-prompt-read-only t)
   ;; Lets comint mode recognize the prompt
-  (setq-local comint-prompt-regexp (rx bol "@" space))
-
-  ;; ... other specialized config introduced later ...
-  )
+  (setq-local comint-prompt-regexp (rx bol "@" space)))
 
 ;;; Configuration
-
 (defconst amm-shell-interpreter "amm"
   "Default Ammm interpreter name.")
 
@@ -68,7 +65,6 @@
   "Default arguments for Amm interpreter.")
 
 ;;; Internalp
-
 (defconst amm-shell-buffer-name "Amm"
   "Default buffer name for Amm interpreter.")
 
@@ -89,9 +85,9 @@
 
 (defun amm-shell-get-process (&optional internal)
   "Get process corr. to `amm-shell-buffer-name'/`amm-shell-internal-buffer-name'."
-  (-let [buffer-name (if (eq internal 'internal)
-             amm-shell-internal-buffer-name
-             amm-shell-buffer-name)]
+  (-let [buffer-name (if internal
+                         amm-shell-internal-buffer-name
+                       amm-shell-buffer-name)]
     (get-process buffer-name)))
 
 (defun amm--shell-current-buffer-process ()
@@ -101,12 +97,15 @@
   "Is `current-buffer' a live process?")
 
 (defun amm--shell-get-or-create-buffer ()
-  "Get or create `amm-shell-buffer' buffer for current amm shell process.")
+   "Get or create `amm-shell-buffer' buffer for current amm shell process."
+)
 
 (defun amm--shell-buffer? ()
-  "Is `amm-shell-buffer' set and does it exist?")
+   "Is `amm-shell-buffer' set and does it exist?"
+)
 
 (defun amm--shell-kill-buffer ()
+   (interactive)
   "Kill `amm-shell-buffer'."
   (when amm-shell-buffer
     (kill-buffer amm-shell-buffer)))
@@ -132,7 +131,7 @@ CMD defaults to the result of `amm--shell-calculate-command'."
   (interactive)
   (unless (executable-find "amm")
     (message "Amm executable not found."))
-  (when (and (not (amm-shell-get-process 'internal))
+  (when (and (not (amm-shell-get-process t))
              (executable-find "amm"))
     (-let [amm--shell-font-lock-enable nil]
       (prog1
@@ -175,7 +174,7 @@ CMD defaults to the result of `amm--shell-calculate-command'."
 
 (defun amm--shell-send-string (string &optional process internal)
   "Internal implementation of shell send string functionality."
-  (let ((process (or process (amm-shell-get-process internal)))
+  (let ((process (or process (amm-shell-get-process t)))
         (amm--shell-output-filter-in-progress t))
     (comint-send-string process string)
     (while amm--shell-output-filter-in-progress
@@ -193,35 +192,76 @@ CMD defaults to the result of `amm--shell-calculate-command'."
          '(amm--shell-output-filter)]
     (amm--shell-send-string string process)))
 
+(defun get--backspace-count (string)
+  (1- (length (car (last (split-string (ansi-color-filter-apply string) "@"))))))
+
+(defun clean-async-shell (proc string)
+  (-let
+      [del-count (get--backspace-count string)
+                 string-to-proc (concat (make-string del-count ?\b) "\n")]
+     (process-send-string proc string)))
+
+(defun my/comint-redirect-send-command-to-process
+  (command output-buffer process echo &optional no-display)
+  "Send COMMAND to PROCESS, with output to OUTPUT-BUFFER.
+With prefix arg, echo output in process buffer.
+
+If NO-DISPLAY is non-nil, do not show the output buffer."
+  (interactive "sCommand: \nBOutput Buffer: \nbProcess Buffer: \nP")
+  (let* (;; The process buffer
+	 (process-buffer (if (processp process)
+			     (process-buffer process)
+			   process))
+	 (proc (get-buffer-process process-buffer)))
+    ;; Change to the process buffer
+    (with-current-buffer process-buffer
+
+      ;; Make sure there's a prompt in the current process buffer
+      (and comint-redirect-perform-sanity-check
+	   (save-excursion
+	     (goto-char (point-max))
+	     (or (re-search-backward comint-prompt-regexp nil t)
+		 (error "No prompt found or `comint-prompt-regexp' not set properly"))))
+
+      ;; Set up for redirection
+      (comint-redirect-setup
+       output-buffer
+       (current-buffer)                 ; Comint Buffer
+       comint-prompt-regexp             ; Finished Regexp
+       echo)                            ; Echo input
+
+      ;; Set the filter.
+      (add-function :around (process-filter proc) #'comint-redirect-filter)
+
+      ;; Send the command
+      ;; (process-send-string (current-buffer) (concat command "\n"))
+      (process-send-string (current-buffer) command)
+      
+
+      ;; Show the output
+      (or no-display
+	  (display-buffer
+	   (get-buffer-create
+	    (if (listp output-buffer)
+		(car output-buffer)
+	      output-buffer)))))))
+
 (defun amm--shell-send-async (string)
   "Send STRING to internal amm process asynchronously."
   (let ((output-buffer "*Comint Amm Redirect Work Buffer*")
-        (proc (amm-shell-get-process 'internal)))
+        (proc (amm-shell-get-process t)))
     (with-current-buffer (get-buffer-create output-buffer)
       (erase-buffer)
-      (comint-redirect-send-command-to-process string output-buffer proc nil t)
+      ;; (comint-redirect-send-command-to-process string output-buffer proc nil t)
+      (my/comint-redirect-send-command-to-process string output-buffer proc nil t)
       (set-buffer (process-buffer proc))
       (while (and (null comint-redirect-completed)
-                  (accept-process-output proc nil 100 t)))
+                  (accept-process-output proc 1 nil t)))
       (set-buffer output-buffer)
-      (buffer-string))))
-
-;; (defun amm--shell-send-async (string)
-;;   "Send STRING to internal amm process asynchronously."
-;;   (let ((output-buffer "*Comint Amm Redirect Work Buffer*")
-;;         (internal-proc (amm-shell-get-process 'internal))
-;;         (amm-internal-buffer ))
-;;     (with-current-buffer (get-buffer-create output-buffer)
-;;       (erase-buffer)
-;;       (comint-redirect-setup output-buffer (current-buffer) comint-prompt-regexp nil)
-;;       (comint-send-input t t)
-;;       (process-send-string (current-buffer) string))
-;;     ;; (comint-redirect-send-command-to-process string  proc nil t)
-;;     ;; (set-buffer (process-buffer proc))
-;;       (while (and (null comint-redirect-completed)
-;;                   (accept-process-output internal-proc nil 100 t)))
-;;       (set-buffer output-buffer)
-;;       (buffer-string)))
+      (-let [buffer-str (buffer-string)]
+        (progn (clean-async-shell proc buffer-str)
+               buffer-str)
+        ))))
 
 (defun amm--company-format-str (string)
   "Format STRING to send to amm for completion candidates."
@@ -242,6 +282,12 @@ CMD defaults to the result of `amm--shell-calculate-command'."
     (interactive (company-begin-backend 'company-amm-backend))
     (prefix (company-grab-symbol))
     (candidates (amm--company-candidates arg))))
+
+(defun inf-amm-complete-at-point ()
+  (interactive)
+  (-when-let* ((prefix (company-grab-symbol))
+               (candidates (amm--company-candidates prefix)))
+    (insert (ido-completing-read+ "->" candidates))))
 
 ;; (add-to-list 'company-backends 'company-amm-backend)
 
